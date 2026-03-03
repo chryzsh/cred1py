@@ -39,6 +39,7 @@ if args.mode == "decrypt":
         with open(args.file, "rb") as f:
             filedata = f.read()
         print(f"[*] File size: {len(filedata)} bytes")
+        print(f"[*] Header (40 bytes): {filedata[:40].hex()}")
         aes_bits = sccm_client.detect_encryption_type(filedata)
         print(f"[*] Encryption: AES-{aes_bits}" if aes_bits else "[!] Unknown encryption type in header")
         key_bytes = bytes.fromhex(args.key)

@@ -163,9 +163,18 @@ class SCCM:
         last_16 = (len(encrypted_data) // 16) * 16
         print(f"[*] Encrypted data size: {len(encrypted_data)} bytes (using {last_16})")
         print(f"[*] AES-{aes_bits} key ({len(aes_key)} bytes): {aes_key.hex()}")
+        print(f"[*] Full key material (40 bytes): {key_material.hex()}")
         aes = AES.new(aes_key, AES.MODE_CBC, b"\x00"*16)
         decrypted_raw = aes.decrypt(encrypted_data[:last_16])
-        print(f"[*] First 64 bytes of decrypted data: {decrypted_raw[:64].hex()}")
+        print(f"[*] First 64 bytes of decrypted data (AES-{aes_bits}): {decrypted_raw[:64].hex()}")
+
+        # Also try AES-128 if we're doing AES-256, for debugging
+        if aes_bits == 256:
+            aes128_key = key_material[:16]
+            aes128 = AES.new(aes128_key, AES.MODE_CBC, b"\x00"*16)
+            dec128 = aes128.decrypt(encrypted_data[:last_16])
+            print(f"[*] First 64 bytes with AES-128 key instead: {dec128[:64].hex()}")
+
         try:
             decrypted = decrypted_raw.decode("utf-16-le")
         except UnicodeDecodeError:
