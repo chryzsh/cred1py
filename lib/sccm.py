@@ -161,8 +161,11 @@ class SCCM:
         encrypted_data = self.read_media_variable_file(filedata)
         # Truncate to 16-byte boundary for AES CBC
         last_16 = (len(encrypted_data) // 16) * 16
+        print(f"[*] Encrypted data size: {len(encrypted_data)} bytes (using {last_16})")
+        print(f"[*] AES-{aes_bits} key ({len(aes_key)} bytes): {aes_key.hex()}")
         aes = AES.new(aes_key, AES.MODE_CBC, b"\x00"*16)
         decrypted_raw = aes.decrypt(encrypted_data[:last_16])
+        print(f"[*] First 64 bytes of decrypted data: {decrypted_raw[:64].hex()}")
         try:
             decrypted = decrypted_raw.decode("utf-16-le")
         except UnicodeDecodeError:
