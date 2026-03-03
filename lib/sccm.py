@@ -127,16 +127,42 @@ class SCCM:
     def read_media_variable_file_header(self, filedata):
         return filedata[:40]
 
-    def decrypt_media_file(self, filedata, password):
-        """Decrypt media variable file given raw file data and 20-byte password/key.
-        password: bytes from derive_blank_decryption_key or from a cracked hash.
+    def detect_encryption_type(self, filedata):
+        """Detect AES-128 or AES-256 from the ALG_ID in the file header.
+        ALG_ID is at bytes 16-20 of the 40-byte header (little-endian u32).
+        CALG_AES_128 = 0x0000660e
+        CALG_AES_256 = 0x00006610
         """
+        header = filedata[:40]
+        alg_id = struct.unpack_from("<I", header, 16)[0]
+        if alg_id == 0x660e:
+            return 128
+        elif alg_id == 0x6610:
+            return 256
+        else:
+            return None
+
+    def decrypt_media_file(self, filedata, password):
+        """Decrypt media variable file given raw file data and password/key bytes.
+        password: bytes from derive_blank_decryption_key or from a cracked hash.
+        Auto-detects AES-128 vs AES-256 from the file header.
+        """
+        aes_bits = self.detect_encryption_type(filedata)
+        if aes_bits is None:
+            raise ValueError("Unknown encryption algorithm in file header")
+
         key_material = self.aes_des_key_derivation(password)
-        aes_key = key_material[:16]
+        # AES-128: first 16 bytes, AES-256: first 32 bytes (20 from ipad + 12 from opad)
+        if aes_bits == 128:
+            aes_key = key_material[:16]
+        else:
+            aes_key = key_material[:32]
+
         encrypted_data = self.read_media_variable_file(filedata)
         # Truncate to 16-byte boundary for AES CBC
         last_16 = (len(encrypted_data) // 16) * 16
-        decrypted_raw = self.aes128_decrypt_raw(encrypted_data[:last_16], aes_key)
+        aes = AES.new(aes_key, AES.MODE_CBC, b"\x00"*16)
+        decrypted_raw = aes.decrypt(encrypted_data[:last_16])
         try:
             decrypted = decrypted_raw.decode("utf-16-le")
         except UnicodeDecodeError:

