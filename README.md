@@ -51,15 +51,13 @@ At this stage, two files are downloaded over TFTP, for example:
 1. `2024.09.03.23.35.22.0001.{FEF9DEEE-4C4A-43EF-92BF-2DD23F3CE837}.boot.var`
 2. `2024.09.03.23.35.22.07.{FEF9DEEE-4C4A-43EF-92BF-2DD23F3CE837}.boot.bcd`
 
-Next CRED-1 takes the crypto keys returned in the DHCP response, and takes one of two paths depending on the content:
+Next CRED-1 takes the crypto keys returned in the DHCP response, and takes one of two paths depending on whether a PXE password is configured:
 
-1. If the crypto key is provided, password based encryption is disabled, and therefore a key derivation function is run to produce an AES key to decrypt the variables file
+1. **No PXE password set** — The DHCP response includes a crypto key (encrypted key material). A key derivation function is run on this material to produce an AES key, which is used to decrypt the variables file directly. No cracking needed.
 
-OR
+2. **PXE password is set** — The DHCP response does NOT include a crypto key (only the file path). A hashcat hash is extracted from the variables file header so the password can be cracked offline.
 
-2. If no crypto key is provided, password based encryption is enabled, and a HashCat ouotput is produced from the variables file to allow us to recover the encryption key
-
-Once the key has been recovered (or provided), the variable file can be decrypted and the contents can be used to retrieve Network Access Account username/password.
+Once the key has been recovered (or derived), the variable file can be decrypted and the contents can be used to retrieve Network Access Account username/password.
 
 Further information on this attack can be found in [Misconfiguration Manager](https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-1/cred-1_description.md).
 
@@ -82,9 +80,9 @@ Once the requirements are met, Cred1Py:
 4. If no PXE password is set, derives the decryption key and decrypts the variables file automatically
 5. If a PXE password is set, outputs a hashcat hash for cracking
 
-### Blank password (no PXE password set)
+### No PXE password set (crypto key in DHCP response)
 
-If the PXE media file has no password, Cred1Py will attempt to decrypt it automatically and print the decrypted task sequence variables.
+When no PXE password is configured, the DHCP response includes encrypted key material. Cred1Py derives the AES decryption key and decrypts the variables file automatically, printing the task sequence variables.
 
 If the TFTP download fails (common over SOCKS5), Cred1Py will still output the derived key and the SMB path so you can download and decrypt manually:
 
@@ -93,9 +91,9 @@ download \\sccmserver.lab.local\REMINST\SMSTemp\BootFileName.boot.var
 python3 pxethiefy.py decrypt -p <derived_key_hex> -f /tmp/BootFileName.boot.var
 ```
 
-### Password-protected PXE media
+### PXE password is set (no crypto key in DHCP response)
 
-If a PXE password is set, Cred1Py outputs a hashcat hash. Crack it, then re-run with the `-p` flag:
+When a PXE password is configured, the DHCP response does NOT include crypto key material. Cred1Py extracts a hashcat hash from the variables file header. Crack it, then re-run with the `-p` flag:
 
 ```
 python ./main.py <target> <src_ip> <socks_host> <socks_port> -p <cracked_password_hex>
