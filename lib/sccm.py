@@ -126,3 +126,12 @@ class SCCM:
         
     def read_media_variable_file_header(self, filedata):
         return filedata[:40]
+
+    def decrypt_media_file(self, filedata, password):
+        """Decrypt media variable file given raw file data and 20-byte password/key.
+        password: bytes from derive_blank_decryption_key or from a cracked hash.
+        """
+        key_material = self.aes_des_key_derivation(password)
+        aes_key = key_material[:16]
+        encrypted_data = self.read_media_variable_file(filedata)
+        return self.aes128_decrypt(encrypted_data, aes_key)

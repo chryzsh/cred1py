@@ -70,8 +70,12 @@ class SOCKS5Client:
         relay_header = b'\x00\x00\x00\x01' + socket.inet_aton(destination[0]) + destination[1].to_bytes(2, 'big')
         self.relay_sd.send(relay_header + data)
         
-    def recv(self, size):
-        data = self.relay_sd.recv(size)
+    def recv(self, size, timeout=10):
+        self.relay_sd.settimeout(timeout)
+        try:
+            data = self.relay_sd.recv(size)
+        except socket.timeout:
+            raise SOCKS5ClientException(f"Timed out waiting for response after {timeout}s")
         
         if len(data) < 11:
             raise SOCKS5ClientException("Received packet is too small")
