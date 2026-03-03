@@ -92,11 +92,29 @@ class SCCM:
 
     def derive_blank_decryption_key(self,encrypted_key):
         length = encrypted_key[0]
-        encrypted_bytes = encrypted_key[1:1+length] # pull out 48 bytes that relate to the encrypted bytes in the DHCP response
+        print(f"[DEBUG] encrypted_key length field: {length}")
+        print(f"[DEBUG] encrypted_key raw ({len(encrypted_key)} bytes): {encrypted_key.hex()}")
+        encrypted_bytes = encrypted_key[1:1+length] # pull out bytes that relate to the encrypted bytes in the DHCP response
+        print(f"[DEBUG] encrypted_bytes ({len(encrypted_bytes)} bytes): {encrypted_bytes.hex()}")
         encrypted_bytes = encrypted_bytes[20:-12] # isolate encrypted data bytes
+        print(f"[DEBUG] isolated encrypted data ({len(encrypted_bytes)} bytes): {encrypted_bytes.hex()}")
         key_data = b'\x9F\x67\x9C\x9B\x37\x3A\x1F\x48\x82\x4F\x37\x87\x33\xDE\x24\xE9' #Harcoded in tspxe.dll
         key = self.aes_des_key_derivation(key_data) # Derive key to decrypt key bytes in the DHCP response
-        var_file_key = (self.aes128_decrypt_raw(encrypted_bytes[:16],key[:16])[:10]) 
+        print(f"[DEBUG] derived inner key (40 bytes): {key.hex()}")
+
+        # Try AES-128 inner decryption (original approach)
+        var_file_key_128 = self.aes128_decrypt_raw(encrypted_bytes[:16],key[:16])
+        print(f"[DEBUG] AES-128 inner decryption result: {var_file_key_128.hex()}")
+
+        # Also try AES-256 inner decryption (in case AES-256 media uses AES-256 for inner encryption too)
+        if len(encrypted_bytes) >= 16:
+            aes256_inner = AES.new(key[:32], AES.MODE_CBC, b"\x00"*16)
+            var_file_key_256 = aes256_inner.decrypt(encrypted_bytes[:16])
+            print(f"[DEBUG] AES-256 inner decryption result: {var_file_key_256.hex()}")
+
+        var_file_key = var_file_key_128[:10]
+        print(f"[DEBUG] var_file_key (10 bytes): {var_file_key.hex()}")
+
         LEADING_BIT_MASK =  b'\x80'
         new_key = bytearray()
         for byte in struct.unpack('10c',var_file_key):
@@ -104,7 +122,8 @@ class SCCM:
                 new_key = new_key + byte + b'\xFF'
             else:
                 new_key = new_key + byte + b'\x00'
-        
+
+        print(f"[DEBUG] expanded key (20 bytes): {new_key.hex()}")
         return new_key
         
     def send_bootp_request(self, client_ip, client_mac):
