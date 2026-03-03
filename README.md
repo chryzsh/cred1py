@@ -78,29 +78,34 @@ Once the requirements are met, Cred1Py:
 
 1. Sends a DHCP Request for the PXE image and crypto key
 2. Retrieves the crypto keying material
-3. Downloads the first 512 bytes of the variables file (possible as this is sent by TFTP server without establishing a TID which needs source port)
-4. Outputs either a crypto key, or a hashcat hash, as well as the path to the boot variable file returned via DHCP
+3. Downloads the variables file over TFTP
+4. If no PXE password is set, derives the decryption key and decrypts the variables file automatically
+5. If a PXE password is set, outputs a hashcat hash for cracking
 
-At this point, we will need to use our C2 to download the boot variable file, for example in Cobalt Strike we can use:
+### Blank password (no PXE password set)
+
+If the PXE media file has no password, Cred1Py will attempt to decrypt it automatically and print the decrypted task sequence variables.
+
+If the TFTP download fails (common over SOCKS5), Cred1Py will still output the derived key and the SMB path so you can download and decrypt manually:
 
 ```
 download \\sccmserver.lab.local\REMINST\SMSTemp\BootFileName.boot.var
+python3 pxethiefy.py decrypt -p <derived_key_hex> -f /tmp/BootFileName.boot.var
 ```
 
-Now if you have a password to crack.. crack it and then pass it as an argument to `pxethiefy.py`:
+### Password-protected PXE media
+
+If a PXE password is set, Cred1Py outputs a hashcat hash. Crack it, then re-run with the `-p` flag:
 
 ```
-python ./pxethiefy.py decrypt -f /tmp/BootFileName.boot.var PASSWORD_HERE
+python ./main.py <target> <src_ip> <socks_host> <socks_port> -p <cracked_password_hex>
 ```
 
-However, if no PXE password is set, you'll be given the crypto key. This will need to be added to `pxethiefy.py`. Easiest way is just to mod `decrypt_media_file` in `pxethiefy.py` to use the binary key, for example:
-
-`decrypt_media_file(args.mediafile, b'\x41\x42\x43\x44.......'):`
-
-We then use PxeThiefy.py to decrypt the `boot.var` file with our recovered key by just invoking with any old password:
+If TFTP fails, download the file via SMB and use pxethiefy.py to decrypt:
 
 ```
-python ./pxethiefy.py decrypt -f /tmp/BootFileName.boot.var USE_THE_SOURCE_LUKE
+download \\sccmserver.lab.local\REMINST\SMSTemp\BootFileName.boot.var
+python3 pxethiefy.py decrypt -p <cracked_password_hex> -f /tmp/BootFileName.boot.var
 ```
 
 ## Credits
