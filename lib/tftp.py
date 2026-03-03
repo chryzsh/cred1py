@@ -9,7 +9,11 @@ class TFTPClient:
 
     def get_file(self, filename):
         self.socks_client.send(b'\x00\x01' + bytes(filename, 'ascii')  + b'\x00' + b'octet' + b'\x00', (self.target, self.port))
-        data = self.socks_client.recv(9076)
+        try:
+            data = self.socks_client.recv(9076)
+        except Exception:
+            print("[!] TFTP request timed out waiting for first block")
+            return None
 
         (opcode, block) = struct.unpack(">HH", data[:4])
         if opcode != 3:
