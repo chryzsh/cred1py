@@ -38,7 +38,9 @@ if args.mode == "decrypt":
     try:
         with open(args.file, "rb") as f:
             filedata = f.read()
+        print(f"[*] File size: {len(filedata)} bytes")
         key_bytes = bytes.fromhex(args.key)
+        print(f"[*] Key ({len(key_bytes)} bytes): {key_bytes.hex()}")
         decrypted = sccm_client.decrypt_media_file(filedata, key_bytes)
         print("[*] Decrypted media variables:")
         print(decrypted)

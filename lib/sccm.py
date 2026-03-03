@@ -136,7 +136,11 @@ class SCCM:
         encrypted_data = self.read_media_variable_file(filedata)
         # Truncate to 16-byte boundary for AES CBC
         last_16 = (len(encrypted_data) // 16) * 16
-        decrypted = self.aes128_decrypt(encrypted_data[:last_16], aes_key)
+        decrypted_raw = self.aes128_decrypt_raw(encrypted_data[:last_16], aes_key)
+        try:
+            decrypted = decrypted_raw.decode("utf-16-le")
+        except UnicodeDecodeError:
+            raise ValueError("Decryption produced invalid data — key is likely wrong")
         # Strip trailing nulls and non-printable chars
         decrypted = decrypted[:decrypted.rfind('\x00')]
         return "".join(c for c in decrypted if c.isprintable())
