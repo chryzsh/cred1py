@@ -134,4 +134,9 @@ class SCCM:
         key_material = self.aes_des_key_derivation(password)
         aes_key = key_material[:16]
         encrypted_data = self.read_media_variable_file(filedata)
-        return self.aes128_decrypt(encrypted_data, aes_key)
+        # Truncate to 16-byte boundary for AES CBC
+        last_16 = (len(encrypted_data) // 16) * 16
+        decrypted = self.aes128_decrypt(encrypted_data[:last_16], aes_key)
+        # Strip trailing nulls and non-printable chars
+        decrypted = decrypted[:decrypted.rfind('\x00')]
+        return "".join(c for c in decrypted if c.isprintable())
