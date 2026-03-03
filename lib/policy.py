@@ -108,27 +108,21 @@ class PolicyRetriever:
             data_path = data_f.name
 
         try:
-            result = subprocess.run(
-                ["openssl", "cms", "-decrypt",
-                 "-inform", "DER",
-                 "-in", data_path,
-                 "-recip", cert_path,
-                 "-inkey", key_path],
-                capture_output=True
-            )
-            if result.returncode != 0:
-                # Try smime instead of cms
-                result = subprocess.run(
-                    ["openssl", "smime", "-decrypt",
-                     "-inform", "DER",
-                     "-in", data_path,
-                     "-recip", cert_path,
-                     "-inkey", key_path],
-                    capture_output=True
-                )
-            if result.returncode != 0:
-                raise ValueError(f"openssl decrypt failed: {result.stderr.decode()}")
-            return result.stdout
+            # Try CMS with -keyid flag (SCCM uses SubjectKeyIdentifier, not IssuerAndSerial)
+            attempts = [
+                ["openssl", "cms", "-decrypt", "-inform", "DER",
+                 "-in", data_path, "-recip", cert_path, "-inkey", key_path, "-keyid"],
+                ["openssl", "cms", "-decrypt", "-inform", "DER",
+                 "-in", data_path, "-recip", cert_path, "-inkey", key_path],
+                ["openssl", "smime", "-decrypt", "-inform", "DER",
+                 "-in", data_path, "-recip", cert_path, "-inkey", key_path],
+            ]
+            for cmd in attempts:
+                result = subprocess.run(cmd, capture_output=True)
+                if result.returncode == 0:
+                    return result.stdout
+            raise ValueError(f"openssl decrypt failed: {result.stderr.decode()}")
+
         finally:
             os.unlink(cert_path)
             os.unlink(key_path)
