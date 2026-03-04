@@ -115,7 +115,13 @@ python3 main.py decrypt /tmp/BootFileName.boot.var <derived_key_hex>
 
 ### PXE password is set (no crypto key in DHCP response)
 
-When a PXE password is configured, the DHCP response does NOT include crypto key material. Cred1Py extracts a hashcat hash from the variables file header. Crack it, then re-run with the `-p` flag:
+When a PXE password is configured, the DHCP response does NOT include crypto key material. Cred1Py extracts a hashcat hash from the variables file header. Depending on the media encryption algorithm, the hash format will be `$sccm$aes128$...` or `$sccm$aes256$...`.
+
+For AES-256 SCCM hashes, use the fork that supports AES-256 SCCM modes:
+
+- https://github.com/chryzsh/hashcat-6.2.6-SCCM
+
+Crack the hash, then re-run with the `-p` flag:
 
 ```
 python ./main.py attack <target> <src_ip> <socks_host> <socks_port> -p <cracked_password_hex>
