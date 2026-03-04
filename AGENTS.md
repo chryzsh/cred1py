@@ -21,6 +21,7 @@
 ## CLI Structure Notes
 - `attack`: PXE/SOCKS attack path.
 - `decrypt`: local `.boot.var` decryption.
+- `hash`: local `.boot.var` hash extraction (`$sccm$aes128$...` / `$sccm$aes256$...`).
 - `loot`: extract media variables/PFX from decrypted XML.
 - `policies`: remote policy retrieval from MP, supports `--fallback-local`.
 - `policies-local`: local `.raw` policy processing and credential extraction.
@@ -28,3 +29,5 @@
 ## Documentation Notes
 - Keep README usage examples in sync with CLI behavior.
 - Prefer `variables.xml` as policy mode input when documenting commands.
+- Every user-facing change must be documented in README in the same change set (new commands, flags, behavior changes, outputs, and prerequisites).
+- Do not merge or push code-only changes that alter usage without corresponding README updates.
