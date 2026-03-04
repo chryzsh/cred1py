@@ -20,13 +20,7 @@ Start a SOCKS5 proxy via your C2, for example, CS uses the command:
 > socks 9090 socks5 enableNoAuth a b
 ```
 
-Then we can invoke Cred1py with:
-
-```
-python ./main.py <target> <src_ip> <socks_host> <socks_port>
-```
-
-Or using the explicit `attack` subcommand:
+Run the attack path with the explicit `attack` subcommand:
 
 ```
 python ./main.py attack <target> <src_ip> <socks_host> <socks_port>
@@ -65,7 +59,7 @@ python ./main.py policies-local <media_xml_path> -i <loot_dir_with_raw_files> -o
 Example:
 
 ```
-python ./main.py policies-local ~/share/projects/skatt/loot/sccm/sccm.xml -i ./loot -o ./loot
+python ./main.py policies-local ./loot/variables.xml -i ./loot -o ./loot
 ```
 
 This mode decrypts:
@@ -94,46 +88,19 @@ To help visualise the components referenced in the arguments:
 
 Note: Due to the way that SOCKS5 works, the C2 server will need to be accessible on all ports to Cred1py as a second ephemeral port is opened as part of the relaying of UDP traffic. Easiest method is usually to just run Cred1py on the C2 server and target `localhost`.. but you do you!
 
-## How CRED-1 Attack Works
+## How It Works
 
-CRED-1 can be broken down into the following steps:
+High-level flow:
 
-1. Send a DHCP Request for the PXE image over UDP 4011
-2. SCCM responds with image path and crypto keys to decrypt the referenced variables file
+1. `attack` talks to SCCM PXE over SOCKS5/UDP and retrieves media variables.
+2. Media variables are decrypted and written to `variables.xml` (includes MP/site/PFX data).
+3. `policies` uses that identity context to request policy content from the Management Point.
+4. If remote processing fails or is incomplete, `--fallback-local` (or `policies-local`) decrypts saved `.raw` blobs from disk.
+5. Decrypted NAA/Task Sequence/Collection policies are parsed for credential material and written to output files.
 
-At this stage, two files are downloaded over TFTP, for example:
+Further reference: [Misconfiguration Manager](https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-1/cred-1_description.md).
 
-1. `2024.09.03.23.35.22.0001.{FEF9DEEE-4C4A-43EF-92BF-2DD23F3CE837}.boot.var`
-2. `2024.09.03.23.35.22.07.{FEF9DEEE-4C4A-43EF-92BF-2DD23F3CE837}.boot.bcd`
-
-Next CRED-1 takes the crypto keys returned in the DHCP response, and takes one of two paths depending on whether a PXE password is configured:
-
-1. **No PXE password set** — The DHCP response includes a crypto key (encrypted key material). A key derivation function is run on this material to produce an AES key, which is used to decrypt the variables file directly. No cracking needed.
-
-2. **PXE password is set** — The DHCP response does NOT include a crypto key (only the file path). A hashcat hash is extracted from the variables file header so the password can be cracked offline.
-
-Once the key has been recovered (or derived), the variable file can be decrypted and the contents can be used to retrieve Network Access Account username/password.
-
-Further information on this attack can be found in [Misconfiguration Manager](https://github.com/subat0mik/Misconfiguration-Manager/blob/main/attack-techniques/CRED/CRED-1/cred-1_description.md).
-
-## How Cred1Py Works
-
-Cred1Py attempts to perform this flow over a SOCKS5 connection, due to UDP support being provided as part of the SOCKS5 specification and included in products such as Cobalt Strike.
-
-There are a few differences to the Cred1py implementation to tools like PxeThiefy as SOCKS5 limits our ability to retrieve TFTP files (we can't determine the source port used during the data transfer and therefore can't download more than a handful of bytes).
-
-This means that the requirements for Cred1Py are:
-
-1. An implant executing with SOCKS5 enabled
-2. Ability to make a SMB connection to a distribution server (this replaces the TFTP component of PxeThiefy)
-
-Once the requirements are met, Cred1Py:
-
-1. Sends a DHCP Request for the PXE image and crypto key
-2. Retrieves the crypto keying material
-3. Downloads the variables file over TFTP
-4. If no PXE password is set, derives the decryption key and decrypts the variables file automatically
-5. If a PXE password is set, outputs a hashcat hash for cracking
+### Credential Recovery Paths
 
 ### No PXE password set (crypto key in DHCP response)
 

