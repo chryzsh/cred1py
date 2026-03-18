@@ -186,6 +186,54 @@ class SCCM:
         decrypted = decrypted[:decrypted.rfind('\x00')]
         return "".join(c for c in decrypted if c.isprintable())
 
+    def _3des_decrypt(self, data, key):
+        des3 = DES3.new(key, DES3.MODE_CBC, b"\x00" * 8)
+        return des3.decrypt(data)
+
+    def _aes_decrypt_raw(self, data, key):
+        aes = AES.new(key, AES.MODE_CBC, b"\x00" * 16)
+        return aes.decrypt(data)
+
+    def deobfuscate_credential_string(self, credential_string):
+        """Deobfuscate SCCM secret="1" credential strings (NAA, collection vars, etc).
+        Supports CALG_3DES (0x6603), CALG_AES_128 (0x660E), CALG_AES_192 (0x660F),
+        CALG_AES_256 (0x6610).
+        """
+        hex_string = "".join(ch for ch in credential_string if ch in "0123456789abcdefABCDEF")
+
+        key_data = binascii.unhexlify(hex_string[8:88])
+        encrypted_data = binascii.unhexlify(hex_string[128:])
+        key = self.aes_des_key_derivation(key_data)
+
+        alg_id = int.from_bytes(binascii.unhexlify(hex_string[112:120]), "little")
+
+        if alg_id == 0x6603:
+            last = (len(encrypted_data) // 8) * 8
+            decrypted = self._3des_decrypt(encrypted_data[:last], key[:24])
+        elif alg_id in (0x660E, 0x660F, 0x6610):
+            key_lengths = {0x660E: 16, 0x660F: 24, 0x6610: 32}
+            last = (len(encrypted_data) // 16) * 16
+            decrypted = self._aes_decrypt_raw(encrypted_data[:last], key[:key_lengths[alg_id]])
+        else:
+            raise ValueError(f"Unsupported ALG_ID: 0x{alg_id:04x}")
+
+        text = decrypted.decode("utf-16-le")
+        return text[:text.rfind('\x00')] if '\x00' in text else text
+
+    def deobfuscate_naa_xml(self, xml_text):
+        """Parse NAAConfig XML and deobfuscate all credential strings."""
+        root = ET.fromstring(xml_text)
+        results = []
+        for instance in root.iter("instance"):
+            if "CCM_NetworkAccessAccount" not in instance.get("class", ""):
+                continue
+            username_el = instance.find(".//*[@name='NetworkAccessUsername']/value")
+            password_el = instance.find(".//*[@name='NetworkAccessPassword']/value")
+            username = self.deobfuscate_credential_string(username_el.text) if username_el is not None and username_el.text else None
+            password = self.deobfuscate_credential_string(password_el.text) if password_el is not None and password_el.text else None
+            results.append((username, password))
+        return results
+
     def extract_media_variables(self, xml_text, output_dir):
         """Parse decrypted media variables XML and extract PFX cert and key info.
         Writes files to output_dir and returns a dict of extracted values.

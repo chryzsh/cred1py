@@ -103,3 +103,26 @@ class SOCKS5Client:
         
 class SOCKS5ClientException(Exception):
     pass
+
+class DirectUDPClient:
+    """Drop-in replacement for SOCKS5Client that sends UDP packets directly."""
+    def __init__(self):
+        self.sd = None
+
+    def connect(self):
+        self.sd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+
+    def close(self):
+        if self.sd:
+            self.sd.close()
+
+    def send(self, data, destination):
+        self.sd.sendto(data, destination)
+
+    def recv(self, size, timeout=10):
+        self.sd.settimeout(timeout)
+        try:
+            data, addr = self.sd.recvfrom(size)
+        except socket.timeout:
+            raise SOCKS5ClientException(f"Timed out waiting for response after {timeout}s")
+        return data

